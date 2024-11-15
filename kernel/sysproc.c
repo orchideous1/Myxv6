@@ -7,6 +7,37 @@
 #include "spinlock.h"
 #include "proc.h"
 
+uint64 
+sys_sigalarm(void)
+{
+  int interval;
+  uint64 f_addr;
+  struct proc *p = myproc();
+
+  argint(0,&interval);
+  argaddr(1,&f_addr);
+
+  p->interval = interval;
+  p->fn = f_addr;
+  p->num_ticks = 0;  
+
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+  if(p->alarm_flag)
+  {
+    *(p->trapframe) = p->pre_trapframe;
+    p->alarm_flag = 0;
+  }
+    
+  return 0;
+}
+
+
 uint64
 sys_exit(void)
 {
@@ -57,7 +88,7 @@ sys_sleep(void)
 {
   int n;
   uint ticks0;
-
+  backtrace();
   if(argint(0, &n) < 0)
     return -1;
   acquire(&tickslock);

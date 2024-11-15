@@ -1,4 +1,11 @@
 // Shell.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wall"
+// 或者针对特定警告，如未使用的变量：
+// #pragma GCC diagnostic ignored "-Wunused-variable"
+
+// 这里是你的代码...
+
 
 #include "kernel/types.h"
 #include "user/user.h"
@@ -491,3 +498,4 @@ nulterminate(struct cmd *cmd)
   }
   return cmd;
 }
+#pragma GCC diagnostic pop
