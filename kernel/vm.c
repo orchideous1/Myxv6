@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h" 
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -18,6 +20,71 @@ extern char trampoline[]; // trampoline.S
 /*
  * create a direct-map page table for the kernel.
  */
+
+void vmprint(pagetable_t pgtbl){
+  printf("page table %p\n", pgtbl);
+  uint64 va = 0;
+  for (int i = 0; i < 512; i++) {
+    pte_t pte2 = pgtbl[i];
+    if(!(pte2 & PTE_V)){
+      continue;
+    }
+    pagetable_t child2 = (pagetable_t)PTE2PA(pte2);
+    printf("||idx: %d: pa: %p, flags: ----\n", i, child2);
+    for(int j = 0; j < 512; ++j){
+      pte_t pte3 = child2[j];
+      if(!(pte3 & PTE_V)){
+        continue;
+      }
+      pagetable_t child3 = (pagetable_t)PTE2PA(pte3);
+      printf("|| ||idx: %d: pa: %p, flags: ----\n", j, child3);
+      for(int k = 0; k < 512; ++k){
+        pte_t pa = child3[k];
+        if(!(pa & PTE_V)){
+          continue;
+        }
+        char r[2];
+        char w[2];
+        char x[2];
+        char u[2];
+        if(pa & PTE_R){
+          r[0] = 'r';
+          r[1] = '\0';
+        }else{
+          r[0] = '-';
+          r[1] = '\0';
+        }
+        
+        if(pa & PTE_W){
+          w[0] = 'w';
+          w[1] = '\0';
+        }else{
+          w[0] = '-';
+          w[1] = '\0';
+        }
+        if(pa & PTE_X){
+          x[0] = 'x';
+          x[1] = '\0';
+        }else{
+          x[0] = '-';
+          x[1] = '\0';
+        }
+        if(pa & PTE_U){
+          u[0] = 'u';
+          u[1] = '\0';
+        }else{
+          u[0] = '-';
+          u[1] = '\0';
+        }
+        //uint shift = (1L << 12);
+        uint size = (1L << 9);
+        va =  k  + j * size  + i * size * size ;
+        printf("|| || ||idx: %d: va: %p -> pa: %p, flags: %s%s%s%s\n", k, (va << 12), PTE2PA(pa), r, w, x, u);
+        
+      }
+    }
+  }
+}
 void
 kvminit()
 {
@@ -180,10 +247,16 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+      if(a >= MAXVA){
+        printf("!!");
+      }
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      //panic("uvmunmap: walk");
+      continue;
+    if((*pte & PTE_V) == 0){
+      //printf("uvmunmap: not mapped\n");
+      continue;
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -291,9 +364,7 @@ freewalk(pagetable_t pagetable)
 
 // Free user memory pages,
 // then free page-table pages.
-void
-uvmfree(pagetable_t pagetable, uint64 sz)
-{
+void uvmfree(pagetable_t pagetable, uint64 sz){
   if(sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
   freewalk(pagetable);
@@ -314,10 +385,15 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+    if((pte = walk(old, i, 0)) == 0){
+      //printf("uvmcopy: pte should exist");
+      continue;
+    } 
+    if((*pte & PTE_V) == 0){
+      //printf("uvmcopy: page not present");
+      continue;
+    }
+        
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -348,6 +424,32 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+
+int uvmshouldallocate(uint64 va) {
+    pte_t* pte;
+    struct proc* p = myproc();
+
+    return va < p->sz                   //确保地址在进程的内存大小范围内
+        && PGROUNDDOWN(va) != r_sp()    //确保地址不在 guard page 中
+        && (((pte = walk(p->pagetable, va, 0)) == 0) || ((*pte & PTE_V) == 0));     //确保页表项确实不存在
+}
+
+void uvmlazyallocate(uint64 va) {
+    struct proc* p = myproc();
+    char* pa = kalloc();    //分配物理地址
+    if (pa == 0) {
+        printf("lazy alloc: out of memory\n");
+        p->killed = 1;
+    }
+    else {
+        memset(pa, 0, PGSIZE);
+        if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, PTE_W | PTE_X | PTE_R | PTE_U) != 0) {      //映射物理地址
+            printf("lazy alloc: failed to map page\n");
+            kfree(pa);
+            p->killed = 1;
+        }
+    }
+}
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
@@ -355,7 +457,8 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-
+  if (uvmshouldallocate(dstva))
+    uvmlazyallocate(dstva);
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
@@ -380,9 +483,13 @@ int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   uint64 n, va0, pa0;
-
+  // if (uvmshouldallocate(srcva))
+  //   uvmlazyallocate(srcva);
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
+    if(uvmshouldallocate(va0)){
+      uvmlazyallocate(va0);
+    }
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
