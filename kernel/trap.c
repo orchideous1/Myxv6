@@ -67,7 +67,49 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause() == 13 || r_scause() == 15){
+    uint64 va = r_stval();
+    if(va > p->sz ){
+      p->killed = 1;
+      printf("va: %p", va);
+      exit(-1);
+    }
+    // find coresponding pa
+    va = PGROUNDDOWN(va);
+    pte_t *pte;
+    uint64 pa;
+    if((pte = walk(p->pagetable, va, 0)) == 0)
+      goto err;
+    if((*pte & PTE_V) == 0)
+      goto err;
+    if((*pte & PTE_C) == 0)
+      goto err;
+    pa = PTE2PA(*pte);   
+    //
+    if(isrefone((void *)pa) == 0){
+      *pte |= PTE_W;
+      *pte &= ~PTE_C;
+    }else{
+      char * mem = kalloc();
+      if(mem == 0){
+        goto err;
+      }
+      memmove(mem, (char*)pa, PGSIZE);
+      *pte &= ~PTE_V;
+      uint flags = PTE_FLAGS(*pte);
+      flags |= PTE_W;
+      flags &= ~PTE_C;
+      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, flags) != 0){
+        kfree(mem);
+        *pte |= PTE_V;
+        goto err;
+      }
+      kfree((void*) pa);
+    }
+    
+    
+  }else {
+err:
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
