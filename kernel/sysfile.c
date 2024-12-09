@@ -52,6 +52,9 @@ fdalloc(struct file *f)
   return -1;
 }
 
+
+
+
 uint64
 sys_dup(void)
 {
@@ -283,6 +286,34 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+
+uint64
+sys_symlink()
+{
+  char target[MAXPATH];
+  char path[MAXPATH];
+  int n;
+  if((n = argstr(0, target, MAXPATH)) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+  begin_op();
+  struct inode* inode;
+  if((inode = create(path, T_SYMLINK, 0, 0)) == 0) {
+    end_op();
+    return -1;
+
+  }
+
+  if(writei(inode, 0, (uint64)target, 0, n) != n) {
+    iunlockput(inode);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(inode);
+  end_op();
+  return 0 ;
+}
+
 uint64
 sys_open(void)
 {
@@ -310,6 +341,35 @@ sys_open(void)
     }
     ilock(ip);
     if(ip->type == T_DIR && omode != O_RDONLY){
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+
+  if (ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {
+    char target[MAXPATH];
+    int cnt = 0;
+    do {
+      if(readi(ip, 0, (uint64)target, 0, MAXPATH) <= 0) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      iunlockput(ip);
+    
+      // get the inode of target path 
+      if((ip = namei(target)) == 0) {
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      if(ip->type != T_SYMLINK) {
+        break;
+      }
+      cnt++;
+    }while(cnt < NSYMLINK);
+    if(cnt >= NSYMLINK){
       iunlockput(ip);
       end_op();
       return -1;
