@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -133,7 +134,9 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+  for (int i = 0; i < 16; i++){
+    p->map_space[i].valid = 0;
+  }
   return p;
 }
 
@@ -301,7 +304,12 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
-
+  for(int i = 0; i < 16; i++) {
+    if(p->map_space[i].valid){
+      memmove(&(np->map_space[i]), &(p->map_space[i]), sizeof(p->map_space[i]));
+      filedup(p->map_space[i].f);
+    }
+  }
   release(&np->lock);
 
   return pid;
@@ -352,7 +360,18 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
-
+  for(int i = 0; i < 16; i++) {
+    if(p->map_space[i].valid) {
+      if(p->map_space[i].flags & MAP_SHARED)
+        filewrite(p->map_space[i].f, p->map_space[i].addr, p->map_space[i].size);
+      fileclose(p->map_space[i].f);
+      // uint64 aligned_addr = PGROUNDUP(p->map_space[i].addr);
+      // uint64 aligned_size = p->map_space[i].size - (aligned_addr - p->map_space[i].addr);
+      // aligned_size = PGROUNDUP(aligned_size);
+      // uvmunmap(p->pagetable, aligned_addr, aligned_size/PGSIZE, 1);
+      p->map_space[i].valid = 0;
+    }
+  }
   begin_op();
   iput(p->cwd);
   end_op();

@@ -484,3 +484,77 @@ sys_pipe(void)
   }
   return 0;
 }
+
+
+uint64 
+sys_mmap(void){
+  int length;
+  int prot;
+  int flags;
+  int fd;
+  if(argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 || argint(4, &fd) < 0)
+    return -1;
+  
+  struct proc * p = myproc();
+  struct file* f = p->ofile[fd];
+  
+
+  if(!f->writable && (prot & PROT_WRITE) && flags == MAP_SHARED)
+    return -1;
+
+  //length = PGROUNDUP(length);
+  if (p->sz + length >= MAXVA)
+    return -1;
+  
+  for(int i = 0; i < 16; i++){
+    if(!p->map_space[i].valid){
+      p->map_space[i].valid = 1;
+      p->map_space[i].f = f;
+      p->map_space[i].addr = PGROUNDUP(p->sz);
+      p->map_space[i].size = PGROUNDUP(length);
+      p->map_space[i].flags = flags;
+      p->map_space[i].prot = prot;
+      p->map_space[i].offset = 0;
+      filedup(f);
+      p->sz = PGROUNDUP(p->sz) + p->map_space[i].size;
+      return p->map_space[i].addr;
+    }
+  }
+  return -1;
+}
+
+uint64
+sys_munmap(void){
+  uint64 addr;
+  int length;
+  struct map_space* my_map = 0;
+  if(argaddr(0, &addr) < 0)
+    return -1;
+  if(argint(0, &length) < 0)
+    return -1;
+
+  struct proc *p = myproc();
+  for(int i = 0; i < 16; i++){
+    if(p->map_space[i].valid == 1 && addr >= p->map_space[i].addr && addr <= p->map_space[i].addr + p->map_space[i].size){
+      my_map = &p->map_space[i];
+      break;
+    }
+  }
+  if(my_map){
+    if(addr == my_map->addr){
+      if(my_map->flags & MAP_SHARED)
+        filewrite(my_map->f, addr, length);
+      uvmunmap(p->pagetable, addr, length/PGSIZE, 1);
+      my_map->addr += addr;
+      my_map->size -= length;
+      if(my_map->size == 0){
+        fileclose(my_map->f);
+        my_map->valid = 0;
+      }  
+    }else{
+      printf("not aligned");
+      return -1;
+    } 
+  }
+  return 0;
+}

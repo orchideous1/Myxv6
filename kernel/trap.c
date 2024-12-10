@@ -3,8 +3,13 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
 #include "proc.h"
 #include "defs.h"
+#include "file.h"
+#include "fcntl.h"
+
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,12 +72,53 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause() == 13 || r_scause() == 15){
+  
+    // 出现报错的虚拟地址
+      uint64 va = r_stval();
+      if(va >= p->sz || va > MAXVA || PGROUNDUP(va) == PGROUNDDOWN(p->trapframe->sp)) 
+      {
+        p->killed = 1;
+        goto end;
+      }
+      struct map_space* my_map = 0;
+      for (int i = 0; i < 16; i++){
+        if(p->map_space[i].valid == 1 && va >= p->map_space[i].addr && va < p->map_space[i].addr + p->map_space[i].size){
+          my_map = &p->map_space[i];
+          break;
+        }
+      }
+      if(my_map){
+        va = PGROUNDDOWN(va);
+        uint64 offset = va - my_map->addr;
+        uint64 pa = (uint64)kalloc();
+        if(pa == 0){
+          p->killed = 1;
+          goto end;
+        }
+        memset((void *)pa, 0, PGSIZE);
+        ilock(my_map->f->ip);
+        readi(my_map->f->ip, 0, pa, offset, PGSIZE);
+        iunlock(my_map->f->ip);
+        int flag = PTE_U;
+        if(my_map->prot & PROT_READ) flag |= PTE_R;
+        if(my_map->prot & PROT_WRITE) flag |= PTE_W;
+        if(my_map->prot & PROT_EXEC) flag |= PTE_X;
+        if(mappages(p->pagetable, va, PGSIZE, pa, flag) != 0) {
+          kfree((void*)pa);
+          p->killed = 1;
+          goto end;
+        }
+      }
+      
+      
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
-
+end:
   if(p->killed)
     exit(-1);
 
@@ -81,6 +127,7 @@ usertrap(void)
     yield();
 
   usertrapret();
+
 }
 
 //
